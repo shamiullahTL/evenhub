@@ -154,7 +154,7 @@ export default function BookingDetailPage() {
         <div className="flex flex-wrap items-start justify-between gap-4 mb-8">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <span className="font-mono font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-lg text-sm">
+              <span data-testid="booking-ref" className="font-mono font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-lg text-sm">
                 {booking.bookingRef}
               </span>
               <Badge variant={booking.status === 'confirmed' ? 'success' : 'danger'}>
@@ -180,18 +180,18 @@ export default function BookingDetailPage() {
 
           {/* Customer */}
           <DetailSection title="Customer Details">
-            <Field label="Name">{booking.customerName}</Field>
-            <Field label="Email">{booking.customerEmail}</Field>
-            <Field label="Phone">{booking.customerPhone}</Field>
+            <Field label="Name"><span data-testid="booking-customer-name">{booking.customerName}</span></Field>
+            <Field label="Email"><span data-testid="booking-customer-email">{booking.customerEmail}</span></Field>
+            <Field label="Phone"><span data-testid="booking-customer-phone">{booking.customerPhone}</span></Field>
           </DetailSection>
 
           {/* Payment summary */}
           <DetailSection title="Payment Summary">
-            <Field label="Tickets">{booking.quantity}</Field>
+            <Field label="Tickets"><span data-testid="booking-quantity">{booking.quantity}</span></Field>
             <Field label="Price per ticket">{booking.event ? fmt_price(parseFloat(booking.event.price)) : '—'}</Field>
             <div className="flex justify-between items-center pt-2 border-t border-gray-100">
               <span className="text-sm font-semibold text-gray-900">Total Paid</span>
-              <span className="text-lg font-bold text-indigo-700">{fmt_price(booking.totalPrice)}</span>
+              <span data-testid="booking-total" className="text-lg font-bold text-indigo-700">{fmt_price(booking.totalPrice)}</span>
             </div>
           </DetailSection>
 

@@ -1,18 +1,22 @@
 import { test, expect } from '@playwright/test';
 
-const BASE_URL      = 'https://eventhub.rahulshettyacademy.com';
 const USER_EMAIL    = 'rahulshetty1@gmail.com';
 const USER_PASSWORD = 'Magiclife1!';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 async function login(page) {
-  await page.goto(`${BASE_URL}/login`);
+  await page.goto('/login');
   await page.getByPlaceholder('you@email.com').fill(USER_EMAIL);
   await page.getByLabel('Password').fill(USER_PASSWORD);
   await page.locator('#login-btn').click();
   // Home page loads after login — "Browse Events →" link confirms successful auth
   await expect(page.getByRole('link', { name: /Browse Events/i }).first()).toBeVisible();
+}
+
+async function preferTestId(page, testId, fallback) {
+  const locator = page.getByTestId(testId);
+  return (await locator.count()) > 0 ? locator : fallback;
 }
 
 /**
@@ -21,7 +25,14 @@ async function login(page) {
  * Precondition: user must be logged in before calling.
  */
 async function bookEvent(page) {
-  await page.goto(`${BASE_URL}/events`);
+  const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const customer = {
+    name: `Test User ${uniqueId}`,
+    email: `testuser+${uniqueId}@example.com`,
+    phone: '9876543210',
+  };
+
+  await page.goto('/events');
 
   // Pick the first card that has a visible "Book Now" button (not sold out)
   const firstCard = page.getByTestId('event-card').filter({
@@ -37,30 +48,42 @@ async function bookEvent(page) {
   await expect(page).toHaveURL(/\/events\/\d+/);
 
   // Fill booking form
-  await page.getByLabel('Full Name').fill('Test User');
-  await page.locator('#customer-email').fill('testuser@example.com');
-  await page.getByPlaceholder('+91 98765 43210').fill('9876543210');
-  await page.locator('.confirm-booking-btn').click();
+  await page.getByLabel('Full Name').fill(customer.name);
+  await page.locator('#customer-email').fill(customer.email);
+  await page.getByPlaceholder('+91 98765 43210').fill(customer.phone);
+  await page.getByRole('button', { name: 'Confirm Booking' }).click();
 
   // Wait for confirmation card
-  const refEl = page.locator('.booking-ref').first();
-  await expect(refEl).toBeVisible();
-  const bookingRef = (await refEl.textContent())?.trim() ?? '';
+  await expect(page.getByText('Booking Confirmed!')).toBeVisible();
+  const refEl = await preferTestId(page, 'booking-ref', page.getByText(/^[A-Z]-[A-Z0-9]{6}$/));
+  await expect(refEl).toHaveCount(1);
+  await expect(refEl).toHaveText(/^[A-Z]-[A-Z0-9]{6}$/);
+  const bookingRef = (await refEl.textContent()).trim();
+  const confirmation = page.getByText('Booking Confirmed!').locator('..');
+  const totalEl = await preferTestId(page, 'booking-total', confirmation.getByText(/^\$[\d,]+$/));
+  await expect(totalEl).toHaveCount(1);
+  const totalPrice = (await totalEl.textContent()).trim();
   console.log(`Booking confirmed. Ref: ${bookingRef}`);
-  return { bookingRef, eventTitle };
+  return { bookingRef, eventTitle, customer, quantity: '1', totalPrice };
 }
 
 /**
  * Clears all bookings. Safe to call when already empty.
  */
 async function clearBookings(page) {
-  await page.goto(`${BASE_URL}/bookings`);
-  const alreadyEmpty = await page.getByText('No bookings yet').isVisible().catch(() => false);
-  if (alreadyEmpty) return;
+  await page.goto('/bookings');
+  await expect(page.getByRole('heading', { name: 'My Bookings' })).toBeVisible();
 
+  const emptyState = page.getByText('No bookings yet');
+  const firstBookingCard = page.getByTestId('booking-card').first();
+  await expect(emptyState.or(firstBookingCard)).toBeVisible();
+  if (await emptyState.isVisible()) return;
+
+  const clearButton = page.getByRole('button', { name: /clear all bookings/i });
+  await expect(clearButton).toBeVisible();
   page.once('dialog', (dialog) => dialog.accept());
-  await page.getByRole('button', { name: /clear all bookings/i }).click();
-  await expect(page.getByText('No bookings yet')).toBeVisible();
+  await clearButton.click();
+  await expect(emptyState).toBeVisible();
 }
 
 // ── Test Suite ─────────────────────────────────────────────────────────────────
@@ -68,14 +91,32 @@ async function clearBookings(page) {
 test.describe('Booking Management — Critical Happy Paths', () => {
 
   // TC-001 ───────────────────────────────────────────────────────────────────
-  test('TC-001: displays booking card on bookings list page', async ({ page }) => {
+  test('TC-001: books an available event and shows confirmation actions', async ({ page }) => {
+    // -- Step 1: Login, clear state, and book an available event --
+    await login(page);
+    await clearBookings(page);
+    const { bookingRef, totalPrice } = await bookEvent(page);
+
+    // -- Step 2: Assert the confirmation card and navigation actions --
+    await expect(page.getByText('Booking Confirmed!')).toBeVisible();
+    const confirmation = page.getByText('Booking Confirmed!').locator('..');
+    const confirmationRef = await preferTestId(page, 'booking-ref', confirmation.getByText(bookingRef, { exact: true }));
+    const confirmationTotal = await preferTestId(page, 'booking-total', confirmation.getByText(totalPrice, { exact: true }));
+    await expect(confirmationRef).toHaveText(bookingRef);
+    await expect(confirmationTotal).toHaveText(totalPrice);
+    await expect(page.getByRole('link', { name: 'View My Bookings' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Browse More Events' })).toBeVisible();
+  });
+
+  // TC-002 ───────────────────────────────────────────────────────────────────
+  test('TC-002: displays booking card on bookings list page', async ({ page }) => {
     // -- Step 1: Login, clear state, create one booking --
     await login(page);
     await clearBookings(page);
-    const { bookingRef, eventTitle } = await bookEvent(page);
+    const { bookingRef, eventTitle, customer, quantity, totalPrice } = await bookEvent(page);
 
     // -- Step 2: Navigate to /bookings --
-    await page.goto(`${BASE_URL}/bookings`);
+    await page.goto('/bookings');
 
     // -- Step 3: Assert booking card appears with correct data --
     const card = page.getByTestId('booking-card').filter({ hasText: bookingRef });
@@ -85,67 +126,73 @@ test.describe('Booking Management — Critical Happy Paths', () => {
     await expect(card).toContainText(bookingRef);
   });
 
-  // TC-002 ───────────────────────────────────────────────────────────────────
-  test('TC-002: shows all sections on booking detail page', async ({ page }) => {
+  // TC-003 ───────────────────────────────────────────────────────────────────
+  test('TC-003: shows all sections on booking detail page', async ({ page }) => {
     // -- Step 1: Login, clear state, create one booking --
     await login(page);
     await clearBookings(page);
-    const { bookingRef, eventTitle } = await bookEvent(page);
+    const { bookingRef, eventTitle, customer, quantity, totalPrice } = await bookEvent(page);
 
     // -- Step 2: Navigate to /bookings and click View Details --
-    await page.goto(`${BASE_URL}/bookings`);
+    await page.goto('/bookings');
     const card = page.getByTestId('booking-card').filter({ hasText: bookingRef });
     await card.getByRole('link', { name: 'View Details' }).click();
     await expect(page).toHaveURL(/\/bookings\/\d+/);
 
     // -- Step 3: Verify breadcrumb shows booking ref --
-    await expect(page.locator('span.font-mono.font-bold').first()).toContainText(bookingRef);
+    const detailRef = page.getByTestId('booking-ref');
+    if (await detailRef.count()) {
+      await expect(detailRef).toHaveText(bookingRef);
+    } else {
+      await expect(page.getByRole('main')).toContainText(bookingRef);
+    }
 
     // -- Step 4: Verify event details section --
     await expect(page.getByText('Event Details')).toBeVisible();
-    await expect(page.getByText(eventTitle).first()).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: eventTitle })).toBeVisible();
 
     // -- Step 5: Verify customer details section --
     await expect(page.getByText('Customer Details')).toBeVisible();
-    await expect(page.getByText('Test User')).toBeVisible();
+    const customerName = await preferTestId(page, 'booking-customer-name', page.getByText(customer.name, { exact: true }));
+    const customerEmail = await preferTestId(page, 'booking-customer-email', page.getByText(customer.email, { exact: true }));
+    const customerPhone = await preferTestId(page, 'booking-customer-phone', page.getByText(customer.phone, { exact: true }));
+    await expect(customerName).toHaveText(customer.name);
+    await expect(customerEmail).toHaveText(customer.email);
+    await expect(customerPhone).toHaveText(customer.phone);
 
     // -- Step 6: Verify payment summary section --
     await expect(page.getByText('Payment Summary')).toBeVisible();
     await expect(page.getByText('Total Paid')).toBeVisible();
+    const bookingQuantity = await preferTestId(
+      page,
+      'booking-quantity',
+      page.getByText('Tickets').locator('..').getByText(quantity, { exact: true }),
+    );
+    const bookingTotal = await preferTestId(
+      page,
+      'booking-total',
+      page.getByText('Total Paid').locator('..').getByText(totalPrice, { exact: true }),
+    );
+    await expect(bookingQuantity).toHaveText(quantity);
+    await expect(bookingTotal).toHaveText(totalPrice);
+    await expect(page.getByText('confirmed')).toBeVisible();
 
     // -- Step 7: Verify refund eligibility check button is present --
     await expect(page.locator('#check-refund-btn')).toBeVisible();
   });
 
-  // TC-006 ───────────────────────────────────────────────────────────────────
-  test('TC-006: navigates to bookings list after booking via View My Bookings link', async ({ page }) => {
+  // TC-004 ───────────────────────────────────────────────────────────────────
+  test('TC-004: navigates to bookings list after booking via View My Bookings link', async ({ page }) => {
     // -- Step 1: Login and clear state --
     await login(page);
     await clearBookings(page);
 
     // -- Step 2: Book the first available event --
-    await page.goto(`${BASE_URL}/events`);
-    const firstCard = page.getByTestId('event-card').filter({
-      has: page.getByTestId('book-now-btn'),
-    }).first();
-    await expect(firstCard).toBeVisible();
-    await firstCard.getByTestId('book-now-btn').click();
-    await expect(page).toHaveURL(/\/events\/\d+/);
-
-    await page.getByLabel('Full Name').fill('Test User');
-    await page.locator('#customer-email').fill('testuser@example.com');
-    await page.getByPlaceholder('+91 98765 43210').fill('9876543210');
-    await page.locator('.confirm-booking-btn').click();
-
-    // -- Step 3: Confirm booking ref appears on confirmation card --
-    const refEl = page.locator('.booking-ref').first();
-    await expect(refEl).toBeVisible();
-    const bookingRef = (await refEl.textContent())?.trim() ?? '';
-    console.log(`Booking confirmed. Ref: ${bookingRef}`);
+    const { bookingRef } = await bookEvent(page);
 
     // -- Step 4: Click "View My Bookings" link on confirmation card --
     await page.getByRole('link', { name: 'View My Bookings' }).click();
-    await expect(page).toHaveURL(`${BASE_URL}/bookings`);
+    await expect(page).toHaveURL(/\/bookings$/);
 
     // -- Step 5: Assert the new booking appears in the list --
     const bookingCard = page.getByTestId('booking-card').filter({ hasText: bookingRef });
@@ -167,15 +214,15 @@ test.describe('Booking Management — Critical Happy Paths', () => {
     console.log(`Ref "${bookingRef}" correctly starts with "${expectedPrefix}-" (event: "${eventTitle}")`);
   });
 
-  // TC-003 + TC-506 ──────────────────────────────────────────────────────────
-  test('TC-003: cancels booking from detail page — shows toast and redirects', async ({ page }) => {
+  // TC-009 + TC-506 ──────────────────────────────────────────────────────────
+  test('TC-009: cancels booking from detail page — shows toast and redirects', async ({ page }) => {
     // -- Step 1: Login, clear state, create one booking --
     await login(page);
     await clearBookings(page);
     const { bookingRef } = await bookEvent(page);
 
     // -- Step 2: Navigate to booking detail via View Details --
-    await page.goto(`${BASE_URL}/bookings`);
+    await page.goto('/bookings');
     const card = page.getByTestId('booking-card').filter({ hasText: bookingRef });
     await card.getByRole('link', { name: 'View Details' }).click();
     await expect(page).toHaveURL(/\/bookings\/\d+/);
@@ -191,22 +238,22 @@ test.describe('Booking Management — Critical Happy Paths', () => {
     await page.locator('#confirm-dialog-yes').click();
 
     // -- Step 6: Assert redirect to /bookings and success toast --
-    await expect(page).toHaveURL(`${BASE_URL}/bookings`);
+    await expect(page).toHaveURL(/\/bookings$/);
     await expect(page.getByText('Booking cancelled successfully')).toBeVisible();
 
     // -- Step 7: Assert booking is no longer in the list --
     await expect(page.getByText('No bookings yet')).toBeVisible();
   });
 
-  // TC-004 ───────────────────────────────────────────────────────────────────
-  test('TC-004: clears all bookings and shows empty state', async ({ page }) => {
+  // TC-010 ───────────────────────────────────────────────────────────────────
+  test('TC-010: clears all bookings and shows empty state', async ({ page }) => {
     // -- Step 1: Login, clear state, create one booking --
     await login(page);
     await clearBookings(page);
     await bookEvent(page);
 
     // -- Step 2: Navigate to /bookings and verify booking exists --
-    await page.goto(`${BASE_URL}/bookings`);
+    await page.goto('/bookings');
     await expect(page.getByTestId('booking-card').first()).toBeVisible();
 
     // -- Step 3: Click "Clear all bookings" and accept browser confirm dialog --
