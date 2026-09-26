@@ -1,0 +1,7 @@
+name: playwright-tests-agent
+description: Run Playwright tests inside Docker containers
+runtime: nodejs
+entrypoint: src/agent.js
+permissions:
+  contents: read
+  actions: write
